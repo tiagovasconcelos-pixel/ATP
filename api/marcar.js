@@ -1,7 +1,11 @@
 // POST /api/marcar
-//   { mes: "2026-10", id: "pedro" }  -> alterna o deposito, devolve { deposito }
-//   { config: {...} }                -> salva a conta e os valores, devolve { config }
-// Grava no Upstash Redis. Sem banco conectado, responde 503 com motivo claro.
+//   { mes:"2026-10", id:"pedro" }  -> alterna o deposito do integrante
+//   { config:{...} }               -> salva a conta e os valores
+// Fala o protocolo Redis em TCP (REDIS_URL).
+
+import { createClient } from "redis";
+
+const VERSAO = "2026-10-25-d";
 
 const PADRAO = {
   membros: [
@@ -14,87 +18,45 @@ const PADRAO = {
   dia: 10
 };
 
-function credenciais() {
+function endereco() {
   const e = process.env;
-  const diretos = [
-    ["KV_REST_API_URL", "KV_REST_API_TOKEN"],
-    ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"]
-  ];
-  for (const [u, t] of diretos) {
-    if (e[u] && e[t]) return { url: String(e[u]).replace(/\/$/, ""), token: e[t], via: u };
-  }
-  // Varredura: o Upstash pode prefixar com o nome do banco.
-  // Procura qualquer chave que termine em REST_URL e o token do mesmo prefixo.
-  const chaves = Object.keys(e);
-  for (const k of chaves) {
-    const m = k.match(/^(.*?)(REST_API_URL|REDIS_REST_URL|REST_URL)$/i);
-    if (!m || !e[k] || !/^https?:\/\//i.test(String(e[k]))) continue;
-    const prefixo = m[1];
-    const kt = chaves.find(x =>
-      x !== k &&
-      x.toLowerCase().startsWith(prefixo.toLowerCase()) &&
-      /TOKEN$/i.test(x) && e[x]);
-    if (kt) return { url: String(e[k]).replace(/\/$/, ""), token: e[kt], via: k };
-  }
-  // Ultimo recurso: a integracao Redis da Vercel pode injetar apenas uma
-  // connection string (REDIS_URL / KV_URL no formato rediss://default:SENHA@host:6379).
-  // Nela, o host e o mesmo do endpoint REST e a senha e o bearer token.
-  for (const k of ["KV_REST_API_URL", "REDIS_URL", "KV_URL", "UPSTASH_REDIS_URL"]) {
-    const v = e[k];
-    if (!v || !/^rediss?:\/\//i.test(String(v))) continue;
-    try {
-      const u = new URL(String(v));
-      const senha = decodeURIComponent(u.password || "");
-      if (u.hostname && senha) {
-        return { url: "https://" + u.hostname, token: senha, via: k + " (connection string)" };
-      }
-    } catch (_) { /* string torta: segue para a proxima */ }
-  }
-
-  return null;
+  return e.REDIS_URL || e.KV_URL || e.UPSTASH_REDIS_URL || e.REDIS_TLS_URL || null;
 }
 
-// Apenas NOMES, nunca valores. Serve para diagnostico enquanto nao conecta.
-function nomesDeVariaveis() {
-  return Object.keys(process.env)
-    .filter(k => /REDIS|UPSTASH|^KV_|REST_API/i.test(k))
-    .sort();
+async function abrir() {
+  const url = endereco();
+  if (!url) return null;
+  const c = createClient({ url, socket: { connectTimeout: 6000, reconnectStrategy: false } });
+  c.on("error", () => {});
+  await c.connect();
+  return c;
 }
 
-async function ler(c, chave) {
-  const r = await fetch(`${c.url}/get/${encodeURIComponent(chave)}`, {
-    headers: { Authorization: `Bearer ${c.token}` }, cache: "no-store"
-  });
-  if (!r.ok) return null;
-  const d = await r.json();
-  if (d.result == null) return null;
-  try { return typeof d.result === "string" ? JSON.parse(d.result) : d.result; }
+function comoJson(bruto) {
+  if (bruto == null) return null;
+  try { return typeof bruto === "string" ? JSON.parse(bruto) : bruto; }
   catch { return null; }
-}
-
-async function gravar(c, chave, valor) {
-  const r = await fetch(`${c.url}/set/${encodeURIComponent(chave)}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${c.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(valor)
-  });
-  if (!r.ok) throw new Error("falha ao gravar: " + r.status);
 }
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ erro: "use POST" });
 
-  const c = credenciais();
-  if (!c) return res.status(503).json({
+  if (!endereco()) return res.status(503).json({
     erro: "banco nao conectado",
-    comoResolver: "Na Vercel: Storage > Marketplace > Redis (Upstash) e conectar ao projeto."
+    comoResolver: "Na Vercel: Storage > conectar o Redis ao projeto, e redeploy.",
+    versao: VERSAO
   });
 
   let corpo = req.body;
   if (typeof corpo === "string") { try { corpo = JSON.parse(corpo); } catch { corpo = {}; } }
   corpo = corpo || {};
 
+  res.setHeader("Cache-Control", "no-store");
+
+  let c = null;
   try {
+    c = await abrir();
+
     // 1) salvar a configuracao
     if (corpo.config) {
       const cfg = corpo.config;
@@ -109,8 +71,8 @@ export default async function handler(req, res) {
         banco: String(cfg.banco || "").slice(0, 120),
         dia: (Number.isInteger(cfg.dia) && cfg.dia >= 1 && cfg.dia <= 28) ? cfg.dia : 10
       };
-      await gravar(c, "atp:config", limpo);
-      return res.status(200).json({ config: limpo });
+      await c.set("atp:config", JSON.stringify(limpo));
+      return res.status(200).json({ config: limpo, versao: VERSAO });
     }
 
     // 2) alternar o deposito de um integrante
@@ -118,23 +80,29 @@ export default async function handler(req, res) {
     const id  = String(corpo.id  || "");
     if (!/^\d{4}-\d{2}$/.test(mes)) return res.status(400).json({ erro: "mes invalido" });
 
-    const cfg = (await ler(c, "atp:config")) || PADRAO;
+    const cfg = comoJson(await c.get("atp:config")) || PADRAO;
     const membro = (cfg.membros || []).find(m => m.id === id);
     if (!membro) return res.status(400).json({ erro: "integrante desconhecido" });
 
     const chave = "atp:dep:" + mes;
-    const dep = (await ler(c, chave)) || {};
+    const dep = comoJson(await c.get(chave)) || {};
     if (dep[id]) delete dep[id];
     else dep[id] = {
       at: new Date().toISOString(),
       valor: (typeof membro.valor === "number") ? membro.valor : null
     };
 
-    await gravar(c, chave, dep);
-    res.setHeader("Cache-Control", "no-store");
-    return res.status(200).json({ deposito: dep });
+    await c.set(chave, JSON.stringify(dep));
+    return res.status(200).json({ deposito: dep, versao: VERSAO });
 
   } catch (e) {
-    return res.status(500).json({ erro: "nao consegui gravar", detalhe: String(e.message || e) });
+    return res.status(500).json({
+      erro: "nao consegui gravar",
+      detalhe: String((e && e.message) || e).slice(0, 200),
+      tipoDoErro: String((e && (e.name || e.code)) || "?").slice(0, 60),
+      versao: VERSAO
+    });
+  } finally {
+    if (c) { try { await c.quit(); } catch (_) {} }
   }
 }

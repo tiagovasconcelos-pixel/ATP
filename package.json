@@ -3,5 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Painel de aporte mensal do fundo ATP Investimentos"
+  "description": "Painel de aporte mensal do fundo ATP Investimentos",
+  "dependencies": {
+    "redis": "^4.7.0"
+  }
 }
