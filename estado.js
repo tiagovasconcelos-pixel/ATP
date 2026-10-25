@@ -2,6 +2,8 @@
 // Le do Upstash Redis. Se o banco ainda nao estiver conectado, devolve o padrao
 // para a pagina abrir bonita; gravar e que vai falhar, e falha avisando.
 
+const VERSAO = "2026-10-25-b";
+
 const PADRAO = {
   membros: [
     { id: "tiago",     nome: "Tiago",            valor: 300 },
@@ -72,10 +74,22 @@ export default async function handler(req, res) {
       deposito: dep || {},
       gravando: cred !== null
     };
+    corpo.versao = VERSAO;
     if (cred) corpo.via = cred.via;
     else corpo.variaveisEncontradas = nomesDeVariaveis();  // so os nomes
     return res.status(200).json(corpo);
   } catch (e) {
-    return res.status(200).json({ config: PADRAO, deposito: {}, gravando: false });
+    // Antes este ramo devolvia gravando:false sem dizer nada, o que e
+    // indistinguivel de "banco nao conectado". Agora ele se identifica.
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({
+      config: PADRAO,
+      deposito: {},
+      gravando: false,
+      versao: VERSAO,
+      erro: "o banco respondeu com falha",
+      detalhe: String((e && e.message) || e).slice(0, 300),
+      variaveisEncontradas: nomesDeVariaveis()
+    });
   }
 }

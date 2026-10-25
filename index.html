@@ -390,6 +390,7 @@ input.f:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:va
         st.dep=d.deposito||{};
         if(d.gravando===false){
           st.erro="Esta página está só de leitura: o banco de dados não está ligado, então nada que você marcar vai ser gravado."
+            +(d.detalhe?(" O banco respondeu: "+d.detalhe):"")
             +(d.variaveisEncontradas?(" Variáveis vistas: "+(d.variaveisEncontradas.join(", ")||"nenhuma")+".")
                                     :" Nenhuma variável de banco encontrada.");
         }
