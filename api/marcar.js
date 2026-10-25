@@ -36,6 +36,21 @@ function credenciais() {
       /TOKEN$/i.test(x) && e[x]);
     if (kt) return { url: String(e[k]).replace(/\/$/, ""), token: e[kt], via: k };
   }
+  // Ultimo recurso: a integracao Redis da Vercel pode injetar apenas uma
+  // connection string (REDIS_URL / KV_URL no formato rediss://default:SENHA@host:6379).
+  // Nela, o host e o mesmo do endpoint REST e a senha e o bearer token.
+  for (const k of ["KV_REST_API_URL", "REDIS_URL", "KV_URL", "UPSTASH_REDIS_URL"]) {
+    const v = e[k];
+    if (!v || !/^rediss?:\/\//i.test(String(v))) continue;
+    try {
+      const u = new URL(String(v));
+      const senha = decodeURIComponent(u.password || "");
+      if (u.hostname && senha) {
+        return { url: "https://" + u.hostname, token: senha, via: k + " (connection string)" };
+      }
+    } catch (_) { /* string torta: segue para a proxima */ }
+  }
+
   return null;
 }
 

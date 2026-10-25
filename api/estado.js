@@ -2,7 +2,11 @@
 // Le do Upstash Redis. Se o banco ainda nao estiver conectado, devolve o padrao
 // para a pagina abrir bonita; gravar e que vai falhar, e falha avisando.
 
-const VERSAO = "2026-10-25-b";
+const VERSAO = "2026-10-25-c";
+
+// Guarda o status HTTP da ultima conversa com o banco, para diagnostico.
+// Nunca guarda token nem host completo.
+let ultimoStatus = null;
 
 const PADRAO = {
   membros: [
@@ -37,6 +41,21 @@ function credenciais() {
       /TOKEN$/i.test(x) && e[x]);
     if (kt) return { url: String(e[k]).replace(/\/$/, ""), token: e[kt], via: k };
   }
+  // Ultimo recurso: a integracao Redis da Vercel pode injetar apenas uma
+  // connection string (REDIS_URL / KV_URL no formato rediss://default:SENHA@host:6379).
+  // Nela, o host e o mesmo do endpoint REST e a senha e o bearer token.
+  for (const k of ["KV_REST_API_URL", "REDIS_URL", "KV_URL", "UPSTASH_REDIS_URL"]) {
+    const v = e[k];
+    if (!v || !/^rediss?:\/\//i.test(String(v))) continue;
+    try {
+      const u = new URL(String(v));
+      const senha = decodeURIComponent(u.password || "");
+      if (u.hostname && senha) {
+        return { url: "https://" + u.hostname, token: senha, via: k + " (connection string)" };
+      }
+    } catch (_) { /* string torta: segue para a proxima */ }
+  }
+
   return null;
 }
 
@@ -53,6 +72,7 @@ async function ler(chave) {
   const r = await fetch(`${c.url}/get/${encodeURIComponent(chave)}`, {
     headers: { Authorization: `Bearer ${c.token}` }, cache: "no-store"
   });
+  ultimoStatus = r.status;
   if (!r.ok) return null;
   const d = await r.json();
   if (d.result == null) return null;
@@ -75,7 +95,13 @@ export default async function handler(req, res) {
       gravando: cred !== null
     };
     corpo.versao = VERSAO;
-    if (cred) corpo.via = cred.via;
+    if (cred) {
+      corpo.via = cred.via;
+      // Diagnostico sem segredo: so o tipo do host e o status HTTP.
+      let tipo = "outro";
+      try { tipo = /\.upstash\.io$/i.test(new URL(cred.url).hostname) ? "upstash.io" : "outro"; } catch (_) {}
+      corpo.sonda = { host: tipo, status: ultimoStatus };
+    }
     else corpo.variaveisEncontradas = nomesDeVariaveis();  // so os nomes
     return res.status(200).json(corpo);
   } catch (e) {
