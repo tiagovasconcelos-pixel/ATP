@@ -1,0 +1,7 @@
+{
+  "name": "atp-aporte",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Painel de aporte mensal do fundo ATP Investimentos"
+}
